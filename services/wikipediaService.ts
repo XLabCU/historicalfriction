@@ -25,12 +25,13 @@ export const fetchArticlesNear = async (
 
   const basicArticles: WikipediaArticle[] = data.query.geosearch;
 
-  // Fetch more details (extracts, wordcount) for these articles
+  // Fetch more details (extracts, info/editcount) for these articles
   const pageIds = basicArticles.map(a => a.pageid).join('|');
   const detailsParams = new URLSearchParams({
     action: 'query',
     pageids: pageIds,
-    prop: 'extracts|revisions',
+    prop: 'extracts|revisions|info',
+    inprop: 'editcount', // Get total number of edits
     explaintext: '1',
     exintro: '1',
     rvprop: 'timestamp|user|comment',
@@ -45,12 +46,15 @@ export const fetchArticlesNear = async (
   return basicArticles.map(article => {
     const details = pages[article.pageid] || {};
     const extract = details.extract || "";
+    const editCount = details.editcount || 0;
+    
     // Calculate bearing
     const bearing = calculateBearing(lat, lng, article.lat, article.lon);
     
     return {
       ...article,
       extract,
+      editCount,
       wordcount: extract.split(/\s+/).length,
       bearing
     };

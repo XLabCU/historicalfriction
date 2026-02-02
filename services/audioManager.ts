@@ -4,11 +4,16 @@ import { SonificationMode, WikipediaArticle } from '../types';
 class AudioManager {
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
-  private oscillators: Set<{ stop: () => void; disconnect: () => void }> = new Set();
+  private oscillators: Set<{ 
+    stop: () => void; 
+    disconnect: () => void; 
+    updatePanning: (heading: number) => void;
+  }> = new Set();
   private melodyTimeout: number | null = null;
   private activeUpdateId: number = 0;
   private chatterInterval: number | null = null;
   private voices: SpeechSynthesisVoice[] = [];
+  private currentHeading: number = 0;
 
   constructor() {
     if (typeof window !== 'undefined' && window.speechSynthesis) {
@@ -29,9 +34,8 @@ class AudioManager {
         latencyHint: 'interactive'
       });
       this.masterGain = this.ctx.createGain();
-      this.masterGain.gain.value = 1.0; // Full volume for master
+      this.masterGain.gain.value = 1.0;
       this.masterGain.connect(this.ctx.destination);
-      console.log("Audio Context Initialized. State:", this.ctx.state);
     } catch (e) {
       console.error("Audio initialization failed", e);
     }
@@ -41,14 +45,17 @@ class AudioManager {
     if (!this.ctx) this.init();
     if (this.ctx && this.ctx.state === 'suspended') {
       await this.ctx.resume();
-      console.log("Audio Context Resumed. State:", this.ctx.state);
     }
   }
 
+  public setHeading(heading: number) {
+    this.currentHeading = heading;
+    this.oscillators.forEach(osc => osc.updatePanning(heading));
+  }
+
   public stopAll() {
-    this.activeUpdateId++; // Increment to invalidate previous async loops
+    this.activeUpdateId++;
     
-    // Stop Web Audio
     this.oscillators.forEach(node => {
       try {
         node.stop();
@@ -57,7 +64,6 @@ class AudioManager {
     });
     this.oscillators.clear();
 
-    // Clear Timouts/Intervals
     if (this.melodyTimeout) {
       window.clearTimeout(this.melodyTimeout);
       this.melodyTimeout = null;
@@ -67,21 +73,19 @@ class AudioManager {
       this.chatterInterval = null;
     }
 
-    // Cancel Speech
     if (typeof window !== 'undefined' && window.speechSynthesis) {
       window.speechSynthesis.cancel();
     }
   }
 
-  public async update(mode: SonificationMode, articles: WikipediaArticle[], radius: number) {
+  public async update(mode: SonificationMode, articles: WikipediaArticle[], radius: number, heading: number) {
+    this.currentHeading = heading;
     if (!this.ctx) this.init();
     await this.resume();
 
-    const currentUpdateId = ++this.activeUpdateId;
     this.stopAll();
-    
-    // Re-verify current update ID after stopAll (which increments it)
     const activeId = this.activeUpdateId;
+    
     if (articles.length === 0) return;
 
     switch (mode) {
@@ -107,22 +111,30 @@ class AudioManager {
 
       const distRatio = Math.max(0, Math.min(1, 1 - article.dist / radius));
       
-      // Audible Mid-Low range (150Hz - 450Hz)
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(150 + (distRatio * 300), this.ctx!.currentTime);
+      // Activity attenuation: Logarithmic scale for edit counts (normalized 0-1 range)
+      const activityScore = Math.min(1, Math.log10((article.editCount || 0) + 1) / 4); // 4 = 10k edits
       
-      const volume = 0.25 * distRatio;
+      osc.type = 'sine';
+      // Higher activity shifts frequency slightly up and increases resonance
+      const baseFreq = 150 + (distRatio * 300);
+      osc.frequency.setValueAtTime(baseFreq + (activityScore * 50), this.ctx!.currentTime);
+      
       gain.gain.setValueAtTime(0, this.ctx!.currentTime);
-      gain.gain.linearRampToValueAtTime(volume, this.ctx!.currentTime + 0.5);
+      // Volume is a function of both distance and edit activity
+      const targetVolume = 0.3 * distRatio * (0.2 + 0.8 * activityScore);
+      gain.gain.linearRampToValueAtTime(targetVolume, this.ctx!.currentTime + 0.5);
 
-      const pan = Math.sin((article.bearing || 0) * Math.PI / 180);
-      panner.pan.setValueAtTime(pan, this.ctx!.currentTime);
+      const updatePanning = (h: number) => {
+        const relativeBearing = (article.bearing! - h + 360) % 360;
+        panner.pan.setTargetAtTime(Math.sin(relativeBearing * Math.PI / 180), this.ctx!.currentTime, 0.1);
+      };
+      updatePanning(this.currentHeading);
 
       osc.connect(gain);
       gain.connect(panner);
       panner.connect(this.masterGain!);
-      
       osc.start();
+
       this.oscillators.add({
         stop: () => {
           try {
@@ -130,7 +142,8 @@ class AudioManager {
             osc.stop(this.ctx!.currentTime + 0.25);
           } catch(e) {}
         },
-        disconnect: () => { osc.disconnect(); gain.disconnect(); panner.disconnect(); }
+        disconnect: () => { osc.disconnect(); gain.disconnect(); panner.disconnect(); },
+        updatePanning
       });
     });
   }
@@ -138,21 +151,16 @@ class AudioManager {
   private startCacophony(articles: WikipediaArticle[], radius: number, activeId: number) {
     if (!this.ctx || !this.masterGain) return;
 
-    // 1. Background "Vocal Buzz" (Sawtooth Low-Pass)
+    // 1. Base Low-End Drone
     const drone = this.ctx.createOscillator();
     const droneGain = this.ctx.createGain();
     const lp = this.ctx.createBiquadFilter();
-    
     drone.type = 'sawtooth';
-    drone.frequency.setValueAtTime(65, this.ctx.currentTime); // C2 frequency
-    
+    drone.frequency.setValueAtTime(55, this.ctx.currentTime);
     lp.type = 'lowpass';
-    lp.frequency.setValueAtTime(400, this.ctx.currentTime);
-    lp.Q.setValueAtTime(10, this.ctx.currentTime); // Resonant "talky" peak
-
+    lp.frequency.setValueAtTime(300, this.ctx.currentTime);
     droneGain.gain.setValueAtTime(0, this.ctx.currentTime);
-    droneGain.gain.linearRampToValueAtTime(0.08, this.ctx.currentTime + 1);
-
+    droneGain.gain.linearRampToValueAtTime(0.08, this.ctx.currentTime + 2);
     drone.connect(lp);
     lp.connect(droneGain);
     droneGain.connect(this.masterGain);
@@ -160,36 +168,109 @@ class AudioManager {
 
     this.oscillators.add({
       stop: () => { try { drone.stop(); } catch(e) {} },
-      disconnect: () => { drone.disconnect(); droneGain.disconnect(); lp.disconnect(); }
+      disconnect: () => { drone.disconnect(); droneGain.disconnect(); lp.disconnect(); },
+      updatePanning: () => {}
     });
 
-    // 2. Multi-vocal Speech Synthesis Loop
+    // 2. Crowd Murmur: Density scaled by article count
+    const murmurDensity = Math.min(Math.floor(articles.length / 2), 10);
+    for (let i = 0; i < murmurDensity; i++) {
+      const babbleOsc = this.ctx.createOscillator();
+      const babbleGain = this.ctx.createGain();
+      const formantFilter = this.ctx.createBiquadFilter();
+      const panner = this.ctx.createStereoPanner();
+
+      babbleOsc.type = 'sawtooth';
+      const baseFreq = 80 + Math.random() * 120;
+      babbleOsc.frequency.setValueAtTime(baseFreq, this.ctx.currentTime);
+
+      formantFilter.type = 'bandpass';
+      formantFilter.frequency.setValueAtTime(400 + Math.random() * 1000, this.ctx.currentTime);
+      formantFilter.Q.setValueAtTime(5, this.ctx.currentTime);
+
+      babbleGain.gain.setValueAtTime(0, this.ctx.currentTime);
+      babbleGain.gain.linearRampToValueAtTime(0.03, this.ctx.currentTime + 1 + Math.random());
+
+      const targetArticle = articles[i % articles.length];
+      const updatePanning = (h: number) => {
+        const relativeBearing = (targetArticle.bearing! - h + 360) % 360;
+        panner.pan.setTargetAtTime(Math.sin(relativeBearing * Math.PI / 180), this.ctx.currentTime, 0.2);
+      };
+      updatePanning(this.currentHeading);
+
+      const lfo = this.ctx.createOscillator();
+      const lfoGain = this.ctx.createGain();
+      lfo.frequency.setValueAtTime(0.5 + Math.random() * 2, this.ctx.currentTime);
+      lfoGain.gain.setValueAtTime(150, this.ctx.currentTime);
+      lfo.connect(lfoGain);
+      lfoGain.connect(formantFilter.frequency);
+      lfo.start();
+
+      babbleOsc.connect(formantFilter);
+      formantFilter.connect(babbleGain);
+      babbleGain.connect(panner);
+      panner.connect(this.masterGain);
+      babbleOsc.start();
+
+      this.oscillators.add({
+        stop: () => { try { babbleOsc.stop(); lfo.stop(); } catch(e) {} },
+        disconnect: () => { babbleOsc.disconnect(); formantFilter.disconnect(); babbleGain.disconnect(); lfo.disconnect(); panner.disconnect(); },
+        updatePanning
+      });
+    }
+
+    // 3. Whisper Layer (Noise) - REDUCED GAIN
+    const noiseBuffer = this.ctx.createBuffer(1, this.ctx.sampleRate * 2, this.ctx.sampleRate);
+    const output = noiseBuffer.getChannelData(0);
+    for (let i = 0; i < this.ctx.sampleRate * 2; i++) {
+      output[i] = Math.random() * 2 - 1;
+    }
+    const noise = this.ctx.createBufferSource();
+    noise.buffer = noiseBuffer;
+    noise.loop = true;
+    const noiseFilter = this.ctx.createBiquadFilter();
+    noiseFilter.type = 'bandpass';
+    noiseFilter.frequency.setValueAtTime(2000, this.ctx.currentTime);
+    const noiseGain = this.ctx.createGain();
+    noiseGain.gain.setValueAtTime(0, this.ctx.currentTime);
+    // Lowered baseline noise gain as requested
+    noiseGain.gain.linearRampToValueAtTime(Math.min(0.015 * (articles.length / 5), 0.05), this.ctx.currentTime + 3);
+    
+    noise.connect(noiseFilter);
+    noiseFilter.connect(noiseGain);
+    noiseGain.connect(this.masterGain);
+    noise.start();
+    this.oscillators.add({
+      stop: () => { try { noise.stop(); } catch(e) {} },
+      disconnect: () => { noise.disconnect(); noiseFilter.disconnect(); noiseGain.disconnect(); },
+      updatePanning: () => {}
+    });
+
+    // 4. Speech Synthesis
     const chatter = () => {
-      // Logic Check: Ensure we haven't switched modes or locations
       if (this.activeUpdateId !== activeId || !window.speechSynthesis) return;
 
       const article = articles[Math.floor(Math.random() * articles.length)];
+      if (!article) return;
+      
       const text = article.extract || article.title;
       const sentences = text.split(/[.!?]/).filter(s => s.trim().length > 5);
       const sentence = sentences[Math.floor(Math.random() * sentences.length)]?.trim() || article.title;
       
       const utter = new SpeechSynthesisUtterance(sentence);
-      
-      // Dynamic Voice Variation for "Friction"
-      utter.pitch = 0.4 + Math.random() * 1.6;
-      utter.rate = 0.9 + Math.random() * 0.6;
-      utter.volume = Math.max(0.5, 1 - (article.dist / radius));
+      utter.pitch = 0.5 + Math.random() * 1.5;
+      utter.rate = 0.8 + Math.random() * 0.7;
+      utter.volume = Math.max(0.3, 1 - (article.dist / radius));
       
       if (this.voices.length > 0) {
-        // Filter for diverse voices if available
         utter.voice = this.voices[Math.floor(Math.random() * this.voices.length)];
       }
-
       window.speechSynthesis.speak(utter);
     };
 
     chatter();
-    this.chatterInterval = window.setInterval(chatter, 2000);
+    const intervalTime = Math.max(1000, 4000 - (articles.length * 100));
+    this.chatterInterval = window.setInterval(chatter, intervalTime);
   }
 
   private startMelody(articles: WikipediaArticle[], radius: number, activeId: number) {
@@ -198,42 +279,54 @@ class AudioManager {
     let index = 0;
     const playNext = () => {
       if (this.activeUpdateId !== activeId || !this.ctx) return;
-      
       const article = articles[index];
+      if (!article) return;
+
       const distRatio = Math.max(0.1, 1 - article.dist / radius);
-      
-      // Bright Pentatonic Scale (C4-C5)
+      // Activity attenuation: Higher edits = longer decay and more presence
+      const activityScore = Math.min(1, Math.log10((article.editCount || 0) + 1) / 4);
+
       const scale = [261.63, 293.66, 329.63, 392.00, 440.00, 523.25]; 
       const freq = scale[(article.pageid || 0) % scale.length];
 
       const osc = this.ctx.createOscillator();
       const gain = this.ctx.createGain();
       const panner = this.ctx.createStereoPanner();
-
-      osc.type = 'triangle'; // Softer than square, richer than sine
+      
+      // Activity affects waveform: busier sites get slightly sharper triangle harmonics
+      osc.type = 'triangle';
       osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
       
-      const pan = Math.sin((article.bearing || 0) * Math.PI / 180);
-      panner.pan.setValueAtTime(pan, this.ctx.currentTime);
+      const updatePanning = (h: number) => {
+        const relativeBearing = (article.bearing! - h + 360) % 360;
+        panner.pan.setTargetAtTime(Math.sin(relativeBearing * Math.PI / 180), this.ctx.currentTime, 0.1);
+      };
+      updatePanning(this.currentHeading);
 
-      gain.gain.setValueAtTime(0, this.ctx.currentTime);
-      gain.gain.linearRampToValueAtTime(0.4 * distRatio, this.ctx.currentTime + 0.05);
-      gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 1.2);
+      const noteDuration = 0.8 + (activityScore * 1.5); // Longer notes for busy articles
+      const noteVolume = 0.4 * distRatio * (0.3 + 0.7 * activityScore);
 
       osc.connect(panner);
       panner.connect(gain);
       gain.connect(this.masterGain!);
+      
+      gain.gain.setValueAtTime(0, this.ctx.currentTime);
+      gain.gain.linearRampToValueAtTime(noteVolume, this.ctx.currentTime + 0.05);
+      gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + noteDuration);
 
       osc.start();
-      osc.stop(this.ctx.currentTime + 1.3);
+      osc.stop(this.ctx.currentTime + noteDuration + 0.1);
       
       this.oscillators.add({
         stop: () => { try { osc.stop(); } catch(e) {} },
-        disconnect: () => { osc.disconnect(); panner.disconnect(); gain.disconnect(); }
+        disconnect: () => { osc.disconnect(); panner.disconnect(); gain.disconnect(); },
+        updatePanning
       });
 
       index = (index + 1) % articles.length;
-      this.melodyTimeout = window.setTimeout(playNext, 600 + Math.random() * 800);
+      // Delay between notes is slightly influenced by activity
+      const nextDelay = Math.max(400, (1000 - (activityScore * 400)) + Math.random() * 500);
+      this.melodyTimeout = window.setTimeout(playNext, nextDelay);
     };
 
     playNext();

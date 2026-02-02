@@ -13,7 +13,8 @@ export interface WikipediaArticle {
   lon: number;
   extract?: string;
   wordcount?: number;
-  bearing?: number; // Calculated angle from user
+  editCount?: number; // Total number of edits to the article
+  bearing?: number; // Calculated angle from user (0 = North)
 }
 
 export interface Coordinates {
@@ -28,4 +29,5 @@ export interface AppState {
   mode: SonificationMode;
   isAudioEnabled: boolean;
   isLoading: boolean;
+  heading: number; // Device heading in degrees (0 = North)
 }
