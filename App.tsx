@@ -19,6 +19,8 @@ const getDistance = (c1: Coordinates, c2: Coordinates) => {
 };
 
 const App: React.FC = () => {
+  // Use a ref for tracking state to access it synchronously in geolocation callback
+  const trackingRef = useRef(true);
   const [state, setState] = useState<AppState>({
     location: { lat: 51.5074, lng: -0.1278 },
     radius: 1000,
@@ -26,6 +28,7 @@ const App: React.FC = () => {
     mode: SonificationMode.AMBIENT,
     isAudioEnabled: false,
     isLoading: false,
+    isTracking: true,
     heading: 0,
   });
 
@@ -53,17 +56,26 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    loadArticles(state.location.lat, state.location.lng, state.radius);
+  }, []);
+
+  useEffect(() => {
     if (navigator.geolocation) {
       const watchId = navigator.geolocation.watchPosition((pos) => {
+        // CRITICAL: Immediately exit if tracking is disabled.
+        // This prevents desktop geolocation ticks from overwriting manual typing.
+        if (!trackingRef.current) return;
+
         const currentCoords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        
         setState(prev => {
           const dist = lastFetchedLocation.current ? getDistance(lastFetchedLocation.current, currentCoords) : Infinity;
           if (dist > 30) {
             loadArticles(currentCoords.lat, currentCoords.lng, prev.radius);
           }
+          setManualInput(mi => ({ ...mi, lat: currentCoords.lat.toString(), lng: currentCoords.lng.toString() }));
           return { ...prev, location: currentCoords };
         });
-        setManualInput(prev => ({ ...prev, lat: currentCoords.lat.toString(), lng: currentCoords.lng.toString() }));
       }, (err) => {
         console.warn("Geolocation watch error or denied.", err);
       }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 });
@@ -127,8 +139,32 @@ const App: React.FC = () => {
     const lng = parseFloat(manualInput.lng);
     const rad = parseInt(manualInput.radius);
     if (!isNaN(lat) && !isNaN(lng) && !isNaN(rad)) {
-      setState(prev => ({ ...prev, location: { lat, lng }, radius: rad }));
+      trackingRef.current = false;
+      setState(prev => ({ ...prev, location: { lat, lng }, radius: rad, isTracking: false }));
       loadArticles(lat, lng, rad);
+    }
+  };
+
+  const toggleTracking = () => {
+    const newTracking = !state.isTracking;
+    trackingRef.current = newTracking;
+    setState(prev => {
+      if (newTracking && navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition((pos) => {
+          const c = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+          setManualInput(mi => ({ ...mi, lat: c.lat.toString(), lng: c.lng.toString() }));
+          loadArticles(c.lat, c.lng, state.radius);
+        });
+      }
+      return { ...prev, isTracking: newTracking };
+    });
+  };
+
+  const handleInputChange = (key: 'lat' | 'lng', val: string) => {
+    setManualInput(prev => ({ ...prev, [key]: val }));
+    if (trackingRef.current) {
+      trackingRef.current = false;
+      setState(s => ({ ...s, isTracking: false }));
     }
   };
 
@@ -146,14 +182,28 @@ const App: React.FC = () => {
       <main className="max-w-6xl w-full grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
         <div className="lg:col-span-4 space-y-8 bg-neutral-900/40 p-6 rounded-2xl border border-neutral-800/60 backdrop-blur-md">
           <section className="space-y-4">
-            <h2 className="text-[10px] font-bold uppercase tracking-[0.3em] text-violet-400 font-mono">Environment</h2>
+            <div className="flex justify-between items-center mb-2">
+              <h2 className="text-[10px] font-bold uppercase tracking-[0.3em] text-violet-400 font-mono">Environment</h2>
+              <button 
+                onClick={toggleTracking}
+                className={`flex items-center gap-2 px-2 py-1 rounded-md border text-[9px] font-mono uppercase tracking-wider transition-all ${
+                  state.isTracking 
+                  ? 'border-emerald-500/50 text-emerald-400 bg-emerald-500/10' 
+                  : 'border-neutral-700 text-neutral-500 bg-black/40'
+                }`}
+              >
+                <div className={`w-1.5 h-1.5 rounded-full ${state.isTracking ? 'bg-emerald-400 animate-pulse' : 'bg-neutral-600'}`} />
+                {state.isTracking ? 'Auto-Follow On' : 'Follow Disabled'}
+              </button>
+            </div>
+            
             <div className="grid grid-cols-2 gap-4">
               <div className="flex flex-col gap-1">
                 <label className="text-[9px] text-neutral-500 font-mono uppercase tracking-wider">Lat</label>
                 <input 
                   type="text" 
                   value={manualInput.lat}
-                  onChange={e => setManualInput({...manualInput, lat: e.target.value})}
+                  onChange={e => handleInputChange('lat', e.target.value)}
                   className="bg-black border border-neutral-800 rounded px-3 py-2 text-xs focus:border-violet-500 outline-none transition-colors font-mono"
                 />
               </div>
@@ -162,7 +212,7 @@ const App: React.FC = () => {
                 <input 
                   type="text" 
                   value={manualInput.lng}
-                  onChange={e => setManualInput({...manualInput, lng: e.target.value})}
+                  onChange={e => handleInputChange('lng', e.target.value)}
                   className="bg-black border border-neutral-800 rounded px-3 py-2 text-xs focus:border-violet-500 outline-none transition-colors font-mono"
                 />
               </div>
