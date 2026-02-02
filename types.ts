@@ -29,5 +29,6 @@ export interface AppState {
   mode: SonificationMode;
   isAudioEnabled: boolean;
   isLoading: boolean;
+  isTracking: boolean; // Whether to follow real-time GPS
   heading: number; // Device heading in degrees (0 = North)
 }
