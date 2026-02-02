@@ -104,45 +104,71 @@ class AudioManager {
   private startAmbient(articles: WikipediaArticle[], radius: number, activeId: number) {
     if (!this.ctx || !this.masterGain) return;
 
-    articles.slice(0, 15).forEach(article => {
-      const osc = this.ctx!.createOscillator();
-      const gain = this.ctx!.createGain();
-      const panner = this.ctx!.createStereoPanner();
-
+    articles.slice(0, 12).forEach(article => {
       const distRatio = Math.max(0, Math.min(1, 1 - article.dist / radius));
+      const activityScore = Math.min(1, Math.log10((article.editCount || 0) + 1) / 4);
       
-      // Activity attenuation: Logarithmic scale for edit counts (normalized 0-1 range)
-      const activityScore = Math.min(1, Math.log10((article.editCount || 0) + 1) / 4); // 4 = 10k edits
-      
-      osc.type = 'sine';
-      // Higher activity shifts frequency slightly up and increases resonance
-      const baseFreq = 150 + (distRatio * 300);
-      osc.frequency.setValueAtTime(baseFreq + (activityScore * 50), this.ctx!.currentTime);
-      
-      gain.gain.setValueAtTime(0, this.ctx!.currentTime);
-      // Volume is a function of both distance and edit activity
-      const targetVolume = 0.3 * distRatio * (0.2 + 0.8 * activityScore);
-      gain.gain.linearRampToValueAtTime(targetVolume, this.ctx!.currentTime + 0.5);
+      const groupGain = this.ctx!.createGain();
+      const panner = this.ctx!.createStereoPanner();
+      const breathingLfo = this.ctx!.createOscillator();
+      const lfoGain = this.ctx!.createGain();
+
+      // Create a small cluster of partials for a "ghostly" choir effect
+      const partialsCount = 1 + Math.floor(activityScore * 3);
+      const oscNodes: OscillatorNode[] = [];
+
+      for (let i = 0; i < partialsCount; i++) {
+        const osc = this.ctx!.createOscillator();
+        const baseFreq = 120 + (distRatio * 200);
+        // Harmonic series + slight detune based on activity
+        const freq = baseFreq * (i + 1) + (activityScore * 2 * Math.random());
+        osc.frequency.setValueAtTime(freq, this.ctx!.currentTime);
+        osc.type = i === 0 ? 'sine' : 'triangle';
+        
+        const partialGain = this.ctx!.createGain();
+        partialGain.gain.setValueAtTime(0.1 / (i + 1), this.ctx!.currentTime);
+        
+        osc.connect(partialGain);
+        partialGain.connect(groupGain);
+        osc.start();
+        oscNodes.push(osc);
+      }
+
+      // Breathing effect
+      breathingLfo.frequency.setValueAtTime(0.1 + (Math.random() * 0.2), this.ctx!.currentTime);
+      lfoGain.gain.setValueAtTime(0.2, this.ctx!.currentTime);
+      breathingLfo.connect(lfoGain);
+      lfoGain.connect(groupGain.gain);
+      breathingLfo.start();
+
+      groupGain.gain.setValueAtTime(0, this.ctx!.currentTime);
+      const targetVolume = 0.25 * distRatio * (0.3 + 0.7 * activityScore);
+      groupGain.gain.linearRampToValueAtTime(targetVolume, this.ctx!.currentTime + 1.5);
 
       const updatePanning = (h: number) => {
         const relativeBearing = (article.bearing! - h + 360) % 360;
-        panner.pan.setTargetAtTime(Math.sin(relativeBearing * Math.PI / 180), this.ctx!.currentTime, 0.1);
+        panner.pan.setTargetAtTime(Math.sin(relativeBearing * Math.PI / 180), this.ctx!.currentTime, 0.2);
       };
       updatePanning(this.currentHeading);
 
-      osc.connect(gain);
-      gain.connect(panner);
+      groupGain.connect(panner);
       panner.connect(this.masterGain!);
-      osc.start();
 
       this.oscillators.add({
         stop: () => {
           try {
-            gain.gain.linearRampToValueAtTime(0, this.ctx!.currentTime + 0.2);
-            osc.stop(this.ctx!.currentTime + 0.25);
+            groupGain.gain.linearRampToValueAtTime(0, this.ctx!.currentTime + 0.5);
+            oscNodes.forEach(o => o.stop(this.ctx!.currentTime + 0.6));
+            breathingLfo.stop(this.ctx!.currentTime + 0.6);
           } catch(e) {}
         },
-        disconnect: () => { osc.disconnect(); gain.disconnect(); panner.disconnect(); },
+        disconnect: () => { 
+          oscNodes.forEach(o => o.disconnect()); 
+          groupGain.disconnect(); 
+          panner.disconnect(); 
+          breathingLfo.disconnect();
+          lfoGain.disconnect();
+        },
         updatePanning
       });
     });
@@ -160,7 +186,7 @@ class AudioManager {
     lp.type = 'lowpass';
     lp.frequency.setValueAtTime(300, this.ctx.currentTime);
     droneGain.gain.setValueAtTime(0, this.ctx.currentTime);
-    droneGain.gain.linearRampToValueAtTime(0.08, this.ctx.currentTime + 2);
+    droneGain.gain.linearRampToValueAtTime(0.06, this.ctx.currentTime + 2);
     drone.connect(lp);
     lp.connect(droneGain);
     droneGain.connect(this.masterGain);
@@ -172,7 +198,7 @@ class AudioManager {
       updatePanning: () => {}
     });
 
-    // 2. Crowd Murmur: Density scaled by article count
+    // 2. Crowd Murmur
     const murmurDensity = Math.min(Math.floor(articles.length / 2), 10);
     for (let i = 0; i < murmurDensity; i++) {
       const babbleOsc = this.ctx.createOscillator();
@@ -189,7 +215,7 @@ class AudioManager {
       formantFilter.Q.setValueAtTime(5, this.ctx.currentTime);
 
       babbleGain.gain.setValueAtTime(0, this.ctx.currentTime);
-      babbleGain.gain.linearRampToValueAtTime(0.03, this.ctx.currentTime + 1 + Math.random());
+      babbleGain.gain.linearRampToValueAtTime(0.025, this.ctx.currentTime + 1.5);
 
       const targetArticle = articles[i % articles.length];
       const updatePanning = (h: number) => {
@@ -219,7 +245,7 @@ class AudioManager {
       });
     }
 
-    // 3. Whisper Layer (Noise) - REDUCED GAIN
+    // 3. Whisper Layer (Noise)
     const noiseBuffer = this.ctx.createBuffer(1, this.ctx.sampleRate * 2, this.ctx.sampleRate);
     const output = noiseBuffer.getChannelData(0);
     for (let i = 0; i < this.ctx.sampleRate * 2; i++) {
@@ -233,8 +259,7 @@ class AudioManager {
     noiseFilter.frequency.setValueAtTime(2000, this.ctx.currentTime);
     const noiseGain = this.ctx.createGain();
     noiseGain.gain.setValueAtTime(0, this.ctx.currentTime);
-    // Lowered baseline noise gain as requested
-    noiseGain.gain.linearRampToValueAtTime(Math.min(0.015 * (articles.length / 5), 0.05), this.ctx.currentTime + 3);
+    noiseGain.gain.linearRampToValueAtTime(Math.min(0.012 * (articles.length / 5), 0.04), this.ctx.currentTime + 3);
     
     noise.connect(noiseFilter);
     noiseFilter.connect(noiseGain);
@@ -249,27 +274,20 @@ class AudioManager {
     // 4. Speech Synthesis
     const chatter = () => {
       if (this.activeUpdateId !== activeId || !window.speechSynthesis) return;
-
       const article = articles[Math.floor(Math.random() * articles.length)];
       if (!article) return;
-      
-      const text = article.extract || article.title;
-      const sentences = text.split(/[.!?]/).filter(s => s.trim().length > 5);
+      const sentences = (article.extract || article.title).split(/[.!?]/).filter(s => s.trim().length > 5);
       const sentence = sentences[Math.floor(Math.random() * sentences.length)]?.trim() || article.title;
-      
       const utter = new SpeechSynthesisUtterance(sentence);
       utter.pitch = 0.5 + Math.random() * 1.5;
       utter.rate = 0.8 + Math.random() * 0.7;
       utter.volume = Math.max(0.3, 1 - (article.dist / radius));
-      
-      if (this.voices.length > 0) {
-        utter.voice = this.voices[Math.floor(Math.random() * this.voices.length)];
-      }
+      if (this.voices.length > 0) utter.voice = this.voices[Math.floor(Math.random() * this.voices.length)];
       window.speechSynthesis.speak(utter);
     };
 
     chatter();
-    const intervalTime = Math.max(1000, 4000 - (articles.length * 100));
+    const intervalTime = Math.max(1200, 4500 - (articles.length * 120));
     this.chatterInterval = window.setInterval(chatter, intervalTime);
   }
 
@@ -283,49 +301,71 @@ class AudioManager {
       if (!article) return;
 
       const distRatio = Math.max(0.1, 1 - article.dist / radius);
-      // Activity attenuation: Higher edits = longer decay and more presence
       const activityScore = Math.min(1, Math.log10((article.editCount || 0) + 1) / 4);
-
-      const scale = [261.63, 293.66, 329.63, 392.00, 440.00, 523.25]; 
+      
+      const scale = [261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88, 523.25]; 
       const freq = scale[(article.pageid || 0) % scale.length];
 
       const osc = this.ctx.createOscillator();
       const gain = this.ctx.createGain();
       const panner = this.ctx.createStereoPanner();
+      const filter = this.ctx.createBiquadFilter();
       
-      // Activity affects waveform: busier sites get slightly sharper triangle harmonics
-      osc.type = 'triangle';
+      // Timbre shifts based on activity
+      osc.type = activityScore > 0.6 ? 'square' : activityScore > 0.3 ? 'sawtooth' : 'triangle';
       osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
       
+      // Filter for resonance
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(activityScore * 2000 + 400, this.ctx.currentTime);
+      filter.Q.setValueAtTime(activityScore * 10, this.ctx.currentTime);
+
       const updatePanning = (h: number) => {
         const relativeBearing = (article.bearing! - h + 360) % 360;
         panner.pan.setTargetAtTime(Math.sin(relativeBearing * Math.PI / 180), this.ctx.currentTime, 0.1);
       };
       updatePanning(this.currentHeading);
 
-      const noteDuration = 0.8 + (activityScore * 1.5); // Longer notes for busy articles
-      const noteVolume = 0.4 * distRatio * (0.3 + 0.7 * activityScore);
+      const noteDuration = 0.5 + (activityScore * 2.0);
+      const noteVolume = 0.35 * distRatio * (0.2 + 0.8 * activityScore);
 
-      osc.connect(panner);
-      panner.connect(gain);
-      gain.connect(this.masterGain!);
+      osc.connect(filter);
+      filter.connect(gain);
+      gain.connect(panner);
+      panner.connect(this.masterGain!);
       
+      // Simple Envelope
       gain.gain.setValueAtTime(0, this.ctx.currentTime);
-      gain.gain.linearRampToValueAtTime(noteVolume, this.ctx.currentTime + 0.05);
+      gain.gain.linearRampToValueAtTime(noteVolume, this.ctx.currentTime + 0.02);
       gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + noteDuration);
 
+      // Simple Echo/Delay for interest
+      const delay = this.ctx.createDelay();
+      const delayGain = this.ctx.createGain();
+      delay.delayTime.value = 0.4;
+      delayGain.gain.value = 0.3;
+      panner.connect(delay);
+      delay.connect(delayGain);
+      delayGain.connect(this.masterGain!);
+
       osc.start();
-      osc.stop(this.ctx.currentTime + noteDuration + 0.1);
+      osc.stop(this.ctx.currentTime + noteDuration + 0.2);
       
       this.oscillators.add({
         stop: () => { try { osc.stop(); } catch(e) {} },
-        disconnect: () => { osc.disconnect(); panner.disconnect(); gain.disconnect(); },
+        disconnect: () => { 
+          osc.disconnect(); 
+          filter.disconnect(); 
+          gain.disconnect(); 
+          panner.disconnect(); 
+          delay.disconnect(); 
+          delayGain.disconnect(); 
+        },
         updatePanning
       });
 
       index = (index + 1) % articles.length;
-      // Delay between notes is slightly influenced by activity
-      const nextDelay = Math.max(400, (1000 - (activityScore * 400)) + Math.random() * 500);
+      const nextDelay = Math.max(300, (1200 - (activityScore * 600)) + Math.random() * 400);
       this.melodyTimeout = window.setTimeout(playNext, nextDelay);
     };
 
