@@ -1,0 +1,7 @@
+{
+  "name": "Historical Friction: Sonified History",
+  "description": "A sensory exploration of historical data. This app sonifies Wikipedia articles and edit histories based on your location, turning the 'voices of the past' into immersive soundscapes, ambient hums, or generative melodies.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}

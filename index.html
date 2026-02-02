@@ -1,0 +1,59 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Historical Friction: Sonified History</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'sans-serif'],
+            serif: ['Crimson Pro', 'serif'],
+          },
+        }
+      }
+    }
+  </script>
+  <link href="https://fonts.googleapis.com/css2?family=Crimson+Pro:ital,wght@0,300;0,400;0,600;1,300&family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+  <style>
+    body {
+      background-color: #0a0a0a;
+      color: #e5e7eb;
+      overflow-x: hidden;
+    }
+    .blur-overlay {
+      backdrop-filter: blur(8px);
+    }
+    @keyframes pulse-ring {
+      0% { transform: scale(0.3); opacity: 0.8; }
+      80%, 100% { opacity: 0; }
+    }
+    .pulse-ring::before {
+      content: '';
+      position: absolute;
+      top: -100%; left: -100%; bottom: -100%; right: -100%;
+      border-radius: 50%;
+      background-color: rgba(139, 92, 246, 0.3);
+      animation: pulse-ring 2s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+    }
+  </style>
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@^19.2.4",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.4/",
+    "react/": "https://esm.sh/react@^19.2.4/"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="/index.tsx"></script>
+</body>
+</html>
