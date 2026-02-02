@@ -1,4 +1,4 @@
-name: Deploy Editor to GitHub Pages
+name: Deploy Historical Friction Radarscope to GitHub Pages
 
 on:
   push:
