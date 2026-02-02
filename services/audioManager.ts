@@ -287,7 +287,7 @@ class AudioManager {
     };
 
     chatter();
-    const intervalTime = Math.max(1200, 4500 - (articles.length * 120));
+    const intervalTime = Math.max(400, 2000 - (articles.length * 80));
     this.chatterInterval = window.setInterval(chatter, intervalTime);
   }
 
