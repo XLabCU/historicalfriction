@@ -280,7 +280,7 @@ class AudioManager {
       const sentence = sentences[Math.floor(Math.random() * sentences.length)]?.trim() || article.title;
       const utter = new SpeechSynthesisUtterance(sentence);
       utter.pitch = 0.5 + Math.random() * 1.5;
-      utter.rate = 0.8 + Math.random() * 0.7;
+      utter.rate = 1.2 + Math.random() * 0.7;
       utter.volume = Math.max(0.3, 1 - (article.dist / radius));
       if (this.voices.length > 0) utter.voice = this.voices[Math.floor(Math.random() * this.voices.length)];
       window.speechSynthesis.speak(utter);
